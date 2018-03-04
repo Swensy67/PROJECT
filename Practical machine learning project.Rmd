@@ -1,0 +1,173 @@
+---
+title: "Practical machine learning project"
+author: "S. Jangal"
+date: "03 mars 2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.path='figures4/',
+                      fig.pos = 'h',
+                      echo=TRUE, 
+                      warning=FALSE, 
+                      message=FALSE,
+                      cache=TRUE)
+```
+
+# Executive summary
+
+The goal of this exercise is to predict if people well perform weight lifting exercises. We've been provided a training and a testing data sets so as to train the data and use our model on the testing data to make predictions (for more informations about the data see [here]( http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har)).
+After getting and cleaning the data, I tried two **classification** (as we try to predict classes) approaches to fit my data. The first one with **PCA**  preprocessing and **rpart** algorithm which gave me a poor accuracy of 42%. The second one with **svm** algorithm which gave me 77% accuracy.
+
+# Getting and cleaning data
+
+## Getting data
+
+Here is the code to get the data into the working directory :
+```{r GettinData}
+#trainingUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+#testUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+#download.file(trainingUrl, destfile = "./training.csv")
+#download.file(testUrl, destfile = "./testing.csv")
+  
+training <- read.csv("training.csv")
+testing <- read.csv("testing.csv")
+```
+
+## Cleaning data
+
+```{r LookingAtData, eval=FALSE}
+str(training)
+```
+
+When looking at the data, we notice it contains a lot of predictors. I first selected the variables that seemed more relevant to me.  As we're not trying to forecast practice, I got rid of time variables. I kept the data corresponding to the gyroscope, the magnetometer, the acceleration and the Euler angles (roll, pitch and yaw) :
+```{r CleaningData}
+library(dplyr)
+data <- cbind(select(training, starts_with("roll_")), 
+              select(training, starts_with("pitch_")), 
+              select(training, starts_with("yaw_")), 
+              select(training, starts_with("gyros_")), 
+              select(training, starts_with("accel_")), 
+              select(training, starts_with("magnet_")), 
+              select(training, starts_with("class")))
+```
+
+From now on, none of my columns contained NA values :
+```{r}
+anyNA(data)
+```
+
+# Data slicing
+
+Let's separate our **training** data set into a **training2** and a **testing2** data sets (making the **testing** data set our validation set) :
+```{r SlicingData}
+library(caret)
+set.seed(1985)
+inTrain <- createDataPartition(y=data$classe, p=0.7, list=FALSE)
+training2 <- data[inTrain,]
+testing2 <- data[-inTrain,]
+
+remove(data)
+```
+
+# First model : PCA and rpart algorithm
+
+## Exploratory analysis
+
+The **training2** data set contains a lot of predictors. They may not all be useful as they may be correlated. That's why I looked at correlations between predictors, excluding the output :
+```{r Correlations, eval=FALSE}
+M <- abs(cor(training2[,-49]))
+diag(M) <- 0
+which(M > 0.9,arr.ind=T)
+```
+
+I found 15 correlations. For instance, it seems **gyros_arm_x** and **gyros_arm_y** are strongly correlated :
+```{r Plot1, eval=FALSE}
+featurePlot(x=training2[,c(1, 16, 17, 27)],
+            y = training2$classe,
+            plot="pairs")
+```
+
+## PCA (Principal Component Analysis)
+
+### Preprocessing
+
+To avoid too many predictors, I used PCA to extract the best possible combination of predictors and to explain as much variance as possible :
+```{r PCA}
+prin_comp <- prcomp(training2[,-49], scale. = T)
+```
+
+I plotted the cumulative proportion of variance explained, to find what is the best number of principal components to choose :
+```{r Plot2}
+proportionVarianceExplained <- (prin_comp$sdev)^2/sum((prin_comp$sdev)^2)
+plot(cumsum(proportionVarianceExplained), 
+     xlab="Principal Component", 
+     ylab="Cumulative Proportion of Variance Explained", type="b")
+```
+
+According to the plot, the best number sits between 30 and 40 principal components. I chose to preprocess my data with 40 principal components :
+```{r PreProcessingData}
+preProc <- preProcess(training2[,-49],method="pca",pcaComp=40)
+```
+
+### Fitting and predicting
+
+Finally, I trained my data with the **rpart** algorithm (Recursive Partitioning and Regression Trees) :
+```{r FittingData}
+trainPC <- predict(preProc,training2)
+modelFit <- train(classe ~ .,method="rpart",data=trainPC)
+```
+
+This gave me the following tree :
+```{r Plot3, eval=FALSE}
+library(rattle)
+fancyRpartPlot(modelFit$finalModel)
+```
+
+Let's see what it gives with the **testing2** data set :
+```{r Prediction}
+testPC <- predict(preProc,testing2)
+confusionMatrix(testing2$classe,predict(modelFit,testPC))
+```
+
+The accuracy isn't good at all : only 42%, moreover, this model isn't able to determine class "C" elements.
+
+# Second model : SVM classifier
+
+So I decided to use the SVM (Support Vector Machine) classifier instead.
+```{r SVMClassifier}
+trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+svm_Linear <- train(classe ~., data = training2, method = "svmLinear",
+                 trControl=trctrl,
+                 preProcess = c("center", "scale"),
+                 tuneLength = 10)
+svm_Linear
+```
+
+This time, when using on **testing2** data set, the accuracy increases until 77% :
+```{r Prediction2}
+test_pred <- predict(svm_Linear, newdata = testing2)
+confusionMatrix(test_pred, testing2$classe )
+```
+
+# Conclusion
+
+I finally used the second model on the **testing** data sets :
+```{r, eval=FALSE}
+data2 <- cbind(select(testing, starts_with("roll_")), 
+              select(testing, starts_with("pitch_")), 
+              select(testing, starts_with("yaw_")), 
+              select(testing, starts_with("gyros_")), 
+              select(testing, starts_with("accel_")), 
+              select(testing, starts_with("magnet_")))
+test_pred2 <- predict(svm_Linear, newdata = testing)
+test_pred2
+```
+
+
+
+
+
